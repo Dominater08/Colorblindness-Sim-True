@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>CVD Camera</title>
+<meta name="description" content="Live colour vision deficiency simulation on your camera (Machado et al. 2009).">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="CVD Camera">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<style>
+  :root {
+    --bg: #000;
+    --panel: rgba(22, 22, 26, 0.92);
+    --line: rgba(255, 255, 255, 0.12);
+    --text: #f2f2f4;
+    --muted: #9a9aa3;
+    --accent: #ffd34d;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
+
+  #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
+
+  /* ---------- camera stage ---------- */
+  #stage { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; background: #000; }
+  #view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: manipulation; }
+  #video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+  .tag { position: absolute; display: none; padding: 4px 9px; border-radius: 999px;
+    background: rgba(0,0,0,.55); font-size: 12px; font-weight: 600; letter-spacing: .02em;
+    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); pointer-events: none; }
+  #tagSim { color: var(--accent); }
+  #divider { position: absolute; display: none; background: #000; pointer-events: none; }
+
+  /* single view: only the simulated tag, top-left */
+  #stage[data-split="none"] #tagSim { display: block; top: calc(env(safe-area-inset-top) + 10px); left: 12px; }
+  /* stacked (portrait): original on top, simulated below */
+  #stage[data-split="v"] .tag, #stage[data-split="v"] #divider { display: block; }
+  #stage[data-split="v"] #tagOrig { top: calc(env(safe-area-inset-top) + 10px); left: 12px; }
+  #stage[data-split="v"] #tagSim  { top: calc(50% + 10px); left: 12px; }
+  #stage[data-split="v"] #divider { left: 0; right: 0; top: calc(50% - 1px); height: 2px; }
+  /* side by side (landscape): original left, simulated right */
+  #stage[data-split="h"] .tag, #stage[data-split="h"] #divider { display: block; }
+  #stage[data-split="h"] #tagOrig { top: 10px; left: calc(env(safe-area-inset-left) + 12px); }
+  #stage[data-split="h"] #tagSim  { top: 10px; left: calc(50% + 12px); }
+  #stage[data-split="h"] #divider { top: 0; bottom: 0; left: calc(50% - 1px); width: 2px; }
+
+  /* ---------- start / error overlay ---------- */
+  #overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: 24px; text-align: center; background: radial-gradient(ellipse at center, #1a1a20 0%, #000 75%); }
+  #overlay[hidden] { display: none; }
+  #overlay .card { max-width: 340px; }
+  #overlay img { width: 84px; height: 84px; border-radius: 20px; }
+  #overlay h1 { font-size: 22px; margin: 14px 0 6px; }
+  #overlay p { color: var(--muted); margin: 0 0 18px; }
+  #overlay .err { color: #ff8a80; }
+  .btn { appearance: none; border: 0; border-radius: 12px; padding: 13px 22px; font: inherit; font-weight: 600;
+    background: var(--accent); color: #111; cursor: pointer; }
+  .btn:active { transform: scale(.98); }
+
+  /* ---------- controls ---------- */
+  #controls { flex: 0 0 auto; background: var(--panel); border-top: 1px solid var(--line);
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    padding-left: calc(16px + env(safe-area-inset-left)); padding-right: calc(16px + env(safe-area-inset-right)); }
+  #app.hide-ui #controls { display: none; }
+
+  .row { display: flex; align-items: center; gap: 12px; }
+  .row + .row { margin-top: 12px; }
+  .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+
+  .seg { display: flex; flex: 1; background: rgba(255,255,255,.07); border-radius: 10px; padding: 3px; border: 0; margin: 0; min-width: 0; }
+  .seg legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .seg input { position: absolute; opacity: 0; pointer-events: none; }
+  .seg label { flex: 1; text-align: center; padding: 8px 4px; border-radius: 8px; font-size: 14px; font-weight: 600;
+    color: var(--muted); cursor: pointer; white-space: nowrap; }
+  .seg input:checked + label { background: #3a3a42; color: var(--text); }
+  .seg input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  #readout { display: flex; justify-content: space-between; align-items: baseline; }
+  #readout b { font-size: 16px; }
+  #sevVal { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 700; }
+
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 28px; background: transparent; margin: 0; }
+  input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px;
+    background: linear-gradient(to right, var(--accent) var(--fill, 55%), rgba(255,255,255,.18) var(--fill, 55%)); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 26px; height: 26px; margin-top: -11px;
+    border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+  input[type=range]::-moz-range-track { height: 4px; border-radius: 2px; background: rgba(255,255,255,.18); }
+  input[type=range]::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--accent); }
+  input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border: 0; border-radius: 50%; background: #fff; }
+  .ticks { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); padding: 0 4px; margin-top: -2px; }
+
+  .switch { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+  .switch input { position: absolute; opacity: 0; pointer-events: none; }
+  .switch .track { width: 46px; height: 28px; border-radius: 14px; background: rgba(255,255,255,.18); position: relative; transition: background .15s; flex: none; }
+  .switch .track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; transition: transform .15s; }
+  .switch input:checked + .track { background: #34c759; }
+  .switch input:checked + .track::after { transform: translateX(18px); }
+  .switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .hint { margin-left: auto; font-size: 12px; color: var(--muted); text-align: right; }
+
+  /* Landscape phones: move the controls to a side column */
+  @media (orientation: landscape) and (max-height: 520px) {
+    #app { flex-direction: row; }
+    #controls { width: 300px; border-top: 0; border-left: 1px solid var(--line); overflow-y: auto;
+      padding: calc(12px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) 14px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage" data-split="none">
+    <canvas id="view" aria-label="Camera view with colour vision deficiency simulation"></canvas>
+    <video id="video" playsinline muted autoplay></video>
+    <div id="divider"></div>
+    <div class="tag" id="tagOrig">Original</div>
+    <div class="tag" id="tagSim">Simulated</div>
+
+    <div id="overlay">
+      <div class="card">
+        <img src="icon-192.png" alt="">
+        <h1>CVD Camera</h1>
+        <p id="msg">See your surroundings live through a simulation of protanomaly, deuteranomaly or tritanomaly.</p>
+        <button class="btn" id="startBtn" type="button">Start camera</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="controls">
+    <div class="row">
+      <fieldset class="seg" id="typeSeg">
+        <legend>Deficiency type</legend>
+        <input type="radio" name="type" id="t-p" value="protanomaly"><label for="t-p">Protan</label>
+        <input type="radio" name="type" id="t-d" value="deuteranomaly"><label for="t-d">Deutan</label>
+        <input type="radio" name="type" id="t-t" value="tritanomaly"><label for="t-t">Tritan</label>
+      </fieldset>
+    </div>
+
+    <div class="row" style="display:block">
+      <div id="readout"><b id="typeName">Deuteranomaly</b><span><span class="label">Severity</span> <span id="sevVal">0.6</span></span></div>
+      <input type="range" id="sev" min="1" max="10" step="1" value="6" aria-label="Severity">
+      <div class="ticks" aria-hidden="true"><span>0.1</span><span>0.5</span><span>1.0</span></div>
+    </div>
+
+    <div class="row">
+      <label class="switch">
+        <input type="checkbox" id="split">
+        <span class="track"></span>
+        <span>Side by side</span>
+      </label>
+      <span class="hint">Tap view to hide controls</span>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+/* ==========================================================================
+   Machado, Oliveira & Fernandes (2009), "A Physiologically-based Model for
+   Simulation of Color Vision Deficiency", IEEE TVCG 15(6):1291-1298.
+   Table 1 pre-computed matrices, applied to LINEAR RGB.
+   Each entry is a row-major 3x3 matrix; index 0 = severity 0.1 ... index 9 = 1.0.
+   Severity 1.0 corresponds to dichromacy (protanopia / deuteranopia / tritanopia).
+   ========================================================================== */
+const MACHADO = {
+  protanomaly: [
+    [ 0.856167,  0.182038, -0.038205,   0.029342,  0.955115,  0.015544,  -0.002880, -0.001563,  1.004443], // 0.1
+    [ 0.734766,  0.334872, -0.069637,   0.051840,  0.919198,  0.028963,  -0.004928, -0.004209,  1.009137], // 0.2
+    [ 0.630323,  0.465641, -0.095964,   0.069181,  0.890046,  0.040773,  -0.006308, -0.007724,  1.014032], // 0.3
+    [ 0.539009,  0.579343, -0.118352,   0.082546,  0.866121,  0.051332,  -0.007136, -0.011959,  1.019095], // 0.4
+    [ 0.458064,  0.679578, -0.137642,   0.092785,  0.846313,  0.060902,  -0.007494, -0.016807,  1.024301], // 0.5
+    [ 0.385450,  0.769005, -0.154455,   0.100526,  0.829802,  0.069673,  -0.007442, -0.022190,  1.029632], // 0.6
+    [ 0.319627,  0.849633, -0.169261,   0.106241,  0.815969,  0.077790,  -0.007025, -0.028051,  1.035076], // 0.7
+    [ 0.259411,  0.923008, -0.182420,   0.110296,  0.804340,  0.085364,  -0.006276, -0.034346,  1.040622], // 0.8
+    [ 0.203876,  0.990338, -0.194214,   0.112975,  0.794542,  0.092483,  -0.005222, -0.041043,  1.046265], // 0.9
+    [ 0.152286,  1.052583, -0.204868,   0.114503,  0.786281,  0.099216,  -0.003882, -0.048116,  1.051998]  // 1.0
+  ],
+  deuteranomaly: [
+    [ 0.866435,  0.177704, -0.044139,   0.049567,  0.939063,  0.011370,  -0.003453,  0.007233,  0.996220], // 0.1
+    [ 0.760729,  0.319078, -0.079807,   0.090568,  0.889315,  0.020117,  -0.006027,  0.013325,  0.992702], // 0.2
+    [ 0.675425,  0.433850, -0.109275,   0.125303,  0.847755,  0.026942,  -0.007950,  0.018572,  0.989378], // 0.3
+    [ 0.605511,  0.528560, -0.134071,   0.155318,  0.812366,  0.032316,  -0.009376,  0.023176,  0.986200], // 0.4
+    [ 0.547494,  0.607765, -0.155259,   0.181692,  0.781742,  0.036566,  -0.010410,  0.027275,  0.983136], // 0.5
+    [ 0.498864,  0.674741, -0.173604,   0.205199,  0.754872,  0.039929,  -0.011131,  0.030969,  0.980162], // 0.6
+    [ 0.457771,  0.731899, -0.189670,   0.226409,  0.731012,  0.042579,  -0.011595,  0.034333,  0.977261], // 0.7
+    [ 0.422823,  0.781057, -0.203881,   0.245752,  0.709602,  0.044646,  -0.011843,  0.037423,  0.974421], // 0.8
+    [ 0.392952,  0.823610, -0.216562,   0.263559,  0.690210,  0.046232,  -0.011910,  0.040281,  0.971630], // 0.9
+    [ 0.367322,  0.860646, -0.227968,   0.280085,  0.672501,  0.047413,  -0.011820,  0.042940,  0.968881]  // 1.0
+  ],
+  tritanomaly: [
+    [ 0.926670,  0.092514, -0.019184,   0.021191,  0.964503,  0.014306,   0.008437,  0.054813,  0.936750], // 0.1
+    [ 0.895720,  0.133330, -0.029050,   0.029997,  0.945400,  0.024603,   0.013027,  0.104707,  0.882266], // 0.2
+    [ 0.905871,  0.127791, -0.033662,   0.026856,  0.941251,  0.031893,   0.013410,  0.148296,  0.838294], // 0.3
+    [ 0.948035,  0.089490, -0.037526,   0.014364,  0.946792,  0.038844,   0.010853,  0.193991,  0.795156], // 0.4
+    [ 1.017277,  0.027029, -0.044306,  -0.006113,  0.958479,  0.047634,   0.006379,  0.248708,  0.744913], // 0.5
+    [ 1.104996, -0.046633, -0.058363,  -0.032137,  0.971635,  0.060503,   0.001336,  0.317922,  0.680742], // 0.6
+    [ 1.193214, -0.109812, -0.083402,  -0.058496,  0.979410,  0.079086,  -0.002346,  0.403492,  0.598854], // 0.7
+    [ 1.257728, -0.139648, -0.118081,  -0.078003,  0.975409,  0.102594,  -0.003316,  0.501214,  0.502102], // 0.8
+    [ 1.278864, -0.125333, -0.153531,  -0.084748,  0.957674,  0.127074,  -0.000989,  0.601151,  0.399838], // 0.9
+    [ 1.255528, -0.076749, -0.178779,  -0.078411,  0.930809,  0.147602,   0.004733,  0.691367,  0.303900]  // 1.0
+  ]
+};
+const IDENTITY = [1,0,0, 0,1,0, 0,0,1];
+const NAMES = {
+  protanomaly:   ['Protanomaly',   'Protanopia'],
+  deuteranomaly: ['Deuteranomaly', 'Deuteranopia'],
+  tritanomaly:   ['Tritanomaly',   'Tritanopia']
+};
+
+/* ---------------- state (persisted per browser) ---------------- */
+const STORE_KEY = 'cvdcam.v1';
+const state = { type: 'deuteranomaly', sev: 6, split: false, started: false };
+try { Object.assign(state, JSON.parse(localStorage.getItem(STORE_KEY) || '{}')); } catch (e) {}
+if (!MACHADO[state.type]) state.type = 'deuteranomaly';
+state.sev = Math.min(10, Math.max(1, Math.round(+state.sev) || 6));
+function save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (e) {} }
+
+/* ---------------- DOM ---------------- */
+const $ = (id) => document.getElementById(id);
+const app = $('app'), stage = $('stage'), canvas = $('view'), video = $('video');
+const overlay = $('overlay'), msg = $('msg'), startBtn = $('startBtn');
+const sev = $('sev'), sevVal = $('sevVal'), typeName = $('typeName'), splitBox = $('split');
+
+/* ---------------- WebGL ---------------- */
+const VERT = `
+attribute vec2 a_pos;
+uniform vec2 u_scale;          // "object-fit: cover" crop factor for this pane
+varying vec2 v_uv;
+void main() {
+  vec2 uv = a_pos * 0.5 + 0.5;
+  uv = 0.5 + (uv - 0.5) * u_scale;
+  v_uv = vec2(uv.x, 1.0 - uv.y); // video rows are top-down
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}`;
+
+const FRAG = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform sampler2D u_tex;
+uniform mat3 u_m;              // Machado matrix (column-major upload)
+varying vec2 v_uv;
+
+// IEC 61966-2-1 sRGB transfer functions
+vec3 srgbToLinear(vec3 c) {
+  vec3 lo = c / 12.92;
+  vec3 hi = pow((c + 0.055) / 1.055, vec3(2.4));
+  return mix(lo, hi, step(vec3(0.04045), c));
+}
+vec3 linearToSrgb(vec3 l) {
+  l = clamp(l, 0.0, 1.0);
+  vec3 lo = l * 12.92;
+  vec3 hi = 1.055 * pow(l, vec3(1.0 / 2.4)) - 0.055;
+  return mix(lo, hi, step(vec3(0.0031308), l));
+}
+void main() {
+  vec3 srgb = texture2D(u_tex, v_uv).rgb;
+  vec3 lin  = srgbToLinear(srgb);
+  vec3 sim  = u_m * lin;
+  gl_FragColor = vec4(linearToSrgb(sim), 1.0);
+}`;
+
+let gl, prog, loc = {}, tex, glReady = false;
+
+function initGL() {
+  gl = canvas.getContext('webgl', { alpha: false, antialias: false, depth: false, stencil: false,
+                                    premultipliedAlpha: false, preserveDrawingBuffer: false,
+                                    powerPreference: 'high-performance' })
+    || canvas.getContext('experimental-webgl');
+  if (!gl) throw new Error('WebGL is not available on this device/browser.');
+
+  const compile = (type, src) => {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error('Shader: ' + gl.getShaderInfoLog(s));
+    return s;
+  };
+  prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error('Link: ' + gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+
+  loc.pos = gl.getAttribLocation(prog, 'a_pos');
+  loc.scale = gl.getUniformLocation(prog, 'u_scale');
+  loc.m = gl.getUniformLocation(prog, 'u_m');
+  loc.tex = gl.getUniformLocation(prog, 'u_tex');
+
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(loc.pos);
+  gl.vertexAttribPointer(loc.pos, 2, gl.FLOAT, false, 0, 0);
+
+  tex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  // Video frames are non-power-of-two: no mipmaps, clamp to edge.
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
+  gl.uniform1i(loc.tex, 0);
+  glReady = true;
+}
+
+// GLSL mat3 is column-major; our tables are row-major.
+const colMajor = (m) => new Float32Array([m[0],m[3],m[6], m[1],m[4],m[7], m[2],m[5],m[8]]);
+const identityCM = colMajor(IDENTITY);
+let simCM = colMajor(MACHADO[state.type][state.sev - 1]);
+
+canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); glReady = false; });
+canvas.addEventListener('webglcontextrestored', () => { try { initGL(); } catch (err) { showError(err.message); } });
+
+/* ---------------- sizing ---------------- */
+function fitCanvas() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.round(stage.clientWidth * dpr));
+  const h = Math.max(1, Math.round(stage.clientHeight * dpr));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  stage.dataset.split = state.split ? (stage.clientHeight >= stage.clientWidth ? 'v' : 'h') : 'none';
+}
+new ResizeObserver(fitCanvas).observe(stage);
+
+// Scale UVs so the video covers a w*h pane without distortion (centre crop).
+function coverScale(w, h) {
+  const va = video.videoWidth / video.videoHeight, pa = w / h;
+  return va > pa ? [pa / va, 1] : [1, va / pa];
+}
+
+function drawPane(x, y, w, h, matrixCM) {
+  gl.viewport(x, y, w, h);
+  const s = coverScale(w, h);
+  gl.uniform2f(loc.scale, s[0], s[1]);
+  gl.uniformMatrix3fv(loc.m, false, matrixCM);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+/* ---------------- render loop ---------------- */
+let rafId = 0;
+function render() {
+  rafId = requestAnimationFrame(render);
+  if (!glReady || video.readyState < 2 || !video.videoWidth) return;
+
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+
+  const W = canvas.width, H = canvas.height, mode = stage.dataset.split;
+  if (mode === 'v') {            // portrait: original top, simulated bottom
+    const hb = Math.floor(H / 2);
+    drawPane(0, hb, W, H - hb, identityCM);
+    drawPane(0, 0, W, hb, simCM);
+  } else if (mode === 'h') {     // landscape: original left, simulated right
+    const wl = Math.floor(W / 2);
+    drawPane(0, 0, wl, H, identityCM);
+    drawPane(wl, 0, W - wl, H, simCM);
+  } else {
+    drawPane(0, 0, W, H, simCM);
+  }
+}
+
+/* ---------------- camera ---------------- */
+let stream = null;
+
+async function startCamera() {
+  if (!window.isSecureContext) throw new Error('The camera needs HTTPS. Open this page over https:// (GitHub Pages is fine).');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('This browser does not support camera access.');
+  stopCamera();
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }
+  });
+  stream.getVideoTracks().forEach((t) => t.addEventListener('ended', () => {
+    if (!document.hidden) showStart('The camera stopped. Tap to restart it.');
+  }));
+  video.srcObject = stream;
+  await video.play();
+  overlay.hidden = true;
+  state.started = true; save();
+  if (!rafId) render();
+}
+
+function stopCamera() {
+  if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+  video.srcObject = null;
+}
+
+function showStart(text, isError) {
+  msg.textContent = text;
+  msg.classList.toggle('err', !!isError);
+  startBtn.textContent = isError ? 'Try again' : 'Start camera';
+  overlay.hidden = false;
+}
+function showError(text) { showStart(text, true); }
+
+function explain(err) {
+  const n = err && err.name;
+  if (n === 'NotAllowedError' || n === 'SecurityError')
+    return 'Camera access was blocked. On iPhone: Settings › Safari › Camera › Allow (or Ask), then try again.';
+  if (n === 'NotFoundError' || n === 'OverconstrainedError') return 'No usable camera was found.';
+  if (n === 'NotReadableError') return 'The camera is in use by another app. Close it and try again.';
+  return (err && err.message) || 'Could not start the camera.';
+}
+
+async function tryStart(auto) {
+  startBtn.disabled = true;
+  try {
+    if (!glReady) initGL();
+    await startCamera();
+  } catch (err) {
+    // An automatic start can fail just because there was no tap yet; stay neutral then.
+    if (auto === true && glReady) showStart('Tap to start the camera.');
+    else showError(explain(err));
+  } finally {
+    startBtn.disabled = false;
+  }
+}
+startBtn.addEventListener('click', () => tryStart(false));
+
+// iOS suspends the camera in the background; release it and resume on return.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { stopCamera(); }
+  else if (state.started && overlay.hidden) { startCamera().catch(() => showStart('Tap to resume the camera.')); }
+});
+
+/* ---------------- controls ---------------- */
+function updateUI() {
+  document.querySelector(`input[name=type][value=${state.type}]`).checked = true;
+  sev.value = state.sev;
+  const s = (state.sev / 10).toFixed(1);
+  sevVal.textContent = s;
+  sev.style.setProperty('--fill', ((state.sev - 1) / 9 * 100) + '%');
+  typeName.textContent = state.sev === 10 ? NAMES[state.type][1] + ' (dichromacy)' : NAMES[state.type][0];
+  $('tagSim').textContent = (state.sev === 10 ? NAMES[state.type][1] : NAMES[state.type][0]) + ' ' + s;
+  splitBox.checked = state.split;
+  simCM = colMajor(MACHADO[state.type][state.sev - 1]);
+  fitCanvas();
+}
+
+document.querySelectorAll('input[name=type]').forEach((r) =>
+  r.addEventListener('change', () => { state.type = r.value; save(); updateUI(); }));
+sev.addEventListener('input', () => { state.sev = +sev.value; save(); updateUI(); });
+splitBox.addEventListener('change', () => { state.split = splitBox.checked; save(); updateUI(); });
+canvas.addEventListener('click', () => app.classList.toggle('hide-ui'));
+
+updateUI();
+
+// If the camera was used before, try to start straight away (falls back to the button).
+if (state.started) tryStart(true);
+
+/* ---------------- offline support ---------------- */
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('SW registration failed', e));
+  });
+}
+</script>
+</body>
+</html>
